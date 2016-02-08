@@ -8,11 +8,17 @@
 
 #import "MachO.h"
 
+#import <math.h>
+#import <mach-o/fat.h>
 #import <mach-o/arch.h>
 #import <mach-o/loader.h>
-#import <mach-o/fat.h>
 
 
+
+//segment names found in various packers
+// upx: __XHDR
+// mpress: __MPRESS__*
+const char* packerSegmentNames[] = {"__XHDR", "__MPRESS__", NULL};
 
 @implementation MachO
 
@@ -97,10 +103,21 @@
     //dbg msg
     //NSLog(@"parsed load commands");
     
+    //first determine if binary is encrypted
+    self.binaryInfo[KEY_IS_ENCRYPTED] = [NSNumber numberWithBool:[self isEncrypted]];
+    
+    //all encrypted binaries will also appear packed
+    // ->so only check if unencrypted binaries are unpacked
+    if(YES != [self.binaryInfo[KEY_IS_ENCRYPTED] boolValue])
+    {
+        //determine if packed
+        self.binaryInfo[KEY_IS_PACKED] = [NSNumber numberWithBool:[self isPacked]];
+    }
+    
     //happy
     wasParsed = YES;
     
-    //bail
+//bail
 bail:
     
     return wasParsed;
@@ -148,7 +165,7 @@ bail:
     
     //handle universal case
     if( (FAT_MAGIC == *headerStart) ||
-       (FAT_CIGAM == *headerStart) )
+        (FAT_CIGAM == *headerStart) )
     {
         //dbg msg
         //NSLog(@"parsing universal binary");
@@ -205,7 +222,8 @@ bail:
                            KEY_HEADER_OFFSET:headerOffset,
                            KEY_HEADER_SIZE:@(sizeof(struct mach_header)),
                            KEY_HEADER_BINARY_TYPE:[NSNumber numberWithInt:((struct mach_header*)headerStart)->filetype],
-                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:LITTLE_ENDIAN]
+                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:LITTLE_ENDIAN],
+                           KEY_LOAD_COMMANDS: [[NSPointerArray alloc] initWithOptions:NSPointerFunctionsOpaqueMemory]
                            };
                 
                 //add header
@@ -223,7 +241,8 @@ bail:
                            KEY_HEADER_OFFSET:headerOffset,
                            KEY_HEADER_SIZE:@(sizeof(struct mach_header)),
                            KEY_HEADER_BINARY_TYPE:[NSNumber numberWithInt:((struct mach_header*)headerStart)->filetype],
-                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:BIG_ENDIAN]
+                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:BIG_ENDIAN],
+                           KEY_LOAD_COMMANDS: [[NSPointerArray alloc] initWithOptions:NSPointerFunctionsOpaqueMemory]
                            };
                 
                 //add header
@@ -241,7 +260,8 @@ bail:
                            KEY_HEADER_OFFSET:headerOffset,
                            KEY_HEADER_SIZE:@(sizeof(struct mach_header_64)),
                            KEY_HEADER_BINARY_TYPE:[NSNumber numberWithInt:((struct mach_header_64*)headerStart)->filetype],
-                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:LITTLE_ENDIAN]
+                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:LITTLE_ENDIAN],
+                           KEY_LOAD_COMMANDS: [[NSPointerArray alloc] initWithOptions:NSPointerFunctionsOpaqueMemory]
                            };
                 
                 //add header
@@ -259,7 +279,8 @@ bail:
                            KEY_HEADER_OFFSET:headerOffset,
                            KEY_HEADER_SIZE:@(sizeof(struct mach_header_64)),
                            KEY_HEADER_BINARY_TYPE:[NSNumber numberWithInt:((struct mach_header_64*)headerStart)->filetype],
-                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:BIG_ENDIAN]
+                           KEY_HEADER_BYTE_ORDER: [NSNumber numberWithInt:BIG_ENDIAN],
+                           KEY_LOAD_COMMANDS: [[NSPointerArray alloc] initWithOptions:NSPointerFunctionsOpaqueMemory]
                            };
                 
                 //add header
@@ -330,7 +351,7 @@ bail:
     for(NSDictionary* machoHeader in self.binaryInfo[KEY_MACHO_HEADERS])
     {
         //get pointer to current machO header
-        currentHeader =  (struct mach_header*)(unsigned char*)(binaryBytes + [machoHeader[KEY_HEADER_OFFSET] unsignedIntegerValue]);
+        currentHeader = (struct mach_header*)(unsigned char*)(binaryBytes + [machoHeader[KEY_HEADER_OFFSET] unsignedIntegerValue]);
         
         //get number of load commands
         loadCommandCount = [self makeCompatible:currentHeader->ncmds byteOrder:machoHeader[KEY_HEADER_BYTE_ORDER]];
@@ -340,7 +361,7 @@ bail:
         loadCommand = (struct load_command*)(unsigned char*)(binaryBytes + [machoHeader[KEY_HEADER_OFFSET] unsignedIntegerValue] + [machoHeader[KEY_HEADER_SIZE] unsignedIntValue]);
         
         //iterate over all load commands
-        // ->number of commands is in 'ncmds' member of (currect) header struct
+        // ->number of commands is in 'ncmds' member of (current) header struct
         for(uint32_t i = 0; i < loadCommandCount; i++)
         {
             //sanity check load command
@@ -349,6 +370,9 @@ bail:
                 //bail
                 goto bail;
             }
+            
+            //save load command
+            [machoHeader[KEY_LOAD_COMMANDS] addPointer:loadCommand];
             
             //handle load commands of interest
             switch([self makeCompatible:loadCommand->cmd byteOrder:machoHeader[KEY_HEADER_BYTE_ORDER]])
@@ -414,6 +438,271 @@ bail:
 bail:
     
     return wasParsed;
+}
+
+//determine if binary is encrypted
+// with OS X's native encryption scheme
+// see: http://osxbook.com/book/bonus/chapter7/tpmdrmmyth/
+-(BOOL)isEncrypted
+{
+    //flag
+    BOOL encrypted = NO;
+    
+    //load command
+    struct load_command* loadCommand = NULL;
+    
+    //flags
+    uint32_t segmentFlags = 0;
+    
+    //check text segments
+    // ->any marked encrypted; set flag
+    for(NSMutableDictionary* machoHeader in self.binaryInfo[KEY_MACHO_HEADERS])
+    {
+        //check all load commands
+        for(NSUInteger i = 0; i< [machoHeader[KEY_LOAD_COMMANDS] count]; i++)
+        {
+            //grab load command
+            loadCommand = [machoHeader[KEY_LOAD_COMMANDS] pointerAtIndex:i];
+            
+            //ignore non-segments
+            if( (loadCommand->cmd != LC_SEGMENT) &&
+                (loadCommand->cmd != LC_SEGMENT_64) )
+            {
+                //skip
+                continue;
+            }
+            
+            //ignore everything that is not a text segment
+            // ->for name check, segment_command & segment_command_64 are same
+            if(0 != strncmp(((struct segment_command *)loadCommand)->segname, SEG_TEXT, sizeof(((struct segment_command *)loadCommand)->segname)))
+            {
+                //skip
+                continue;
+            }
+            
+            //grab flags
+            // ->32bit
+            if(sizeof(struct mach_header) == [machoHeader[KEY_HEADER_SIZE] integerValue])
+            {
+                //flags
+                segmentFlags = ((struct segment_command *)loadCommand)->flags;
+                
+            }
+            //grab flags
+            // ->64bit
+            else if(sizeof(struct mach_header_64) == [machoHeader[KEY_HEADER_SIZE] integerValue])
+            {
+                //flags
+                segmentFlags = ((struct segment_command_64 *)loadCommand)->flags;
+
+            }
+            
+            //check if segment is protected
+            if(SG_PROTECTED_VERSION_1 == (segmentFlags & SG_PROTECTED_VERSION_1))
+            {
+                //set flag
+                encrypted = YES;
+                
+                //bail
+                // ->any marked encrypted; set flag for all
+                goto bail;
+            }
+        
+        }//all load commands
+    
+    }//all macho headers (e.g. fat file)
+    
+//bail
+bail:
+    
+    return encrypted;
+}
+
+//determine if packed
+// segment names and/or entropy
+// see: https://github.com/hiddenillusion/AnalyzePE/blob/master/peutils.py
+-(BOOL)isPacked
+{
+    //flag
+    BOOL packed = NO;
+    
+    //file's data
+    NSData* fileData = nil;
+    
+    //file's data, as bytes
+    char* fileBytes = NULL;
+    
+    //load command
+    struct load_command* loadCommand = NULL;
+    
+    //segment offset
+    u_int64_t segmentOffset = 0;
+    
+    //segment size
+    u_int64_t segmentSize = 0;
+    
+    //segment entropy
+    float segmentEntropy = 0.0f;
+    
+    //total
+    float totalCompressedData = 0.0f;
+    
+    //open/read into file
+    fileData = [NSData dataWithContentsOfFile:self.binaryInfo[KEY_BINARY_PATH]];
+    if(nil == fileData)
+    {
+        //bail
+        goto bail;
+    }
+    
+    //get raw bytes
+    fileBytes = (char*)[fileData bytes];
+    
+    //check text segments
+    // ->any marked encrypted; set flag
+    for(NSMutableDictionary* machoHeader in self.binaryInfo[KEY_MACHO_HEADERS])
+    {
+        //check all load commands
+        for(NSUInteger i = 0; i<[machoHeader[KEY_LOAD_COMMANDS] count]; i++)
+        {
+            //grab load command
+            loadCommand = [machoHeader[KEY_LOAD_COMMANDS] pointerAtIndex:i];
+            
+            //ignore non-segments
+            if( (loadCommand->cmd != LC_SEGMENT) &&
+                (loadCommand->cmd != LC_SEGMENT_64) )
+            {
+                //skip
+                continue;
+            }
+            
+            //check if segment name matches known packer
+            // ->upx, mpress etc have unique segment names
+            for(NSUInteger j = 0; NULL != packerSegmentNames[j]; j++)
+            {
+                //check for match
+                if(0 != strncmp(((struct segment_command *)loadCommand)->segname, packerSegmentNames[j], strlen(packerSegmentNames[j])))
+                {
+                    //skip
+                    continue;
+                }
+                
+                //TODO: remove
+                //NSLog(@"found match w/ packed section: %s", packerSegmentNames[j]);
+                
+                //got match
+                packed = YES;
+                
+                //bail
+                // ->its packed
+                goto bail;
+            }
+            
+            //32bit
+            // ->get offset/size of segment
+            if(sizeof(struct mach_header) == [machoHeader[KEY_HEADER_SIZE] integerValue])
+            {
+                //offset
+                segmentOffset = ((struct segment_command *)loadCommand)->fileoff;
+                
+                //size
+                segmentSize = ((struct segment_command *)loadCommand)->filesize;
+                
+            }
+            //64bit
+            // ->get offset/size of segment
+            else if(sizeof(struct mach_header_64) == [machoHeader[KEY_HEADER_SIZE] integerValue])
+            {
+                //offset
+                segmentOffset = ((struct segment_command_64 *)loadCommand)->fileoff;
+                
+                //size
+                segmentSize = ((struct segment_command_64 *)loadCommand)->filesize;
+            }
+            
+            //calc entropy
+            // ->does entire segment...
+            segmentEntropy = [self calcEntropy:&fileBytes[segmentOffset] length:segmentSize];
+            
+            //TODO remove
+            //NSLog(@"%s's entropy: %f", ((struct segment_command *)loadCommand)->segname, segmentEntropy);
+            
+            //TODO: test more!
+            if(segmentEntropy > 7.2f)
+            {
+                //inc total
+                totalCompressedData += segmentSize;
+            }
+        
+        }//all load commands
+        
+        //final calculation for architecture
+        if( ((1.0 * totalCompressedData)/fileData.length) > .2)
+        {
+            //set
+            packed = YES;
+            
+            //bail
+            // ->its packed
+            goto bail;
+            
+        }
+        
+    }//for all macho headers (e.g. fat file)
+    
+//bail
+bail:
+    
+    return packed;
+}
+
+//based on https://github.com/erocarrera/pefile/blob/master/pefile.py
+
+-(float)calcEntropy:(char*)data length:(NSUInteger)length
+{
+    //entropy
+    float entropy = 0.0f;
+    
+    //occurances array
+    unsigned int occurrences[256] = {0};
+    
+    //intermediate var
+    float pX = 0.0f;
+    
+    //sanity check
+    if(0 == length)
+    {
+        //bail
+        goto bail;
+    }
+    
+    //count all occurances
+    for(NSUInteger i = 0; i<length; i++)
+    {
+        //inc
+        occurrences[0xFF & (int)data[i]]++;
+    }
+    
+    //calc entropy
+    for(NSUInteger i = 0; i<sizeof(occurrences)/sizeof(occurrences[0]); i++)
+    {
+        //skip non-occurances
+        if(0 == occurrences[i])
+        {
+            //skip
+            continue;
+        }
+        
+        //calc
+        pX = occurrences[i]/(float)length;
+        
+        entropy -= pX*log2(pX);
+    }
+    
+    
+bail:
+    
+    return entropy;
 }
 
 //helper function

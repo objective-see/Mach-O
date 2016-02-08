@@ -13,15 +13,19 @@
 //dictionary keys
 #define KEY_BINARY_PATH @"binaryPath"
 #define KEY_MACHO_HEADERS @"machoHeaders"
+#define KEY_LOAD_COMMANDS @"loadCommands"
 
 #define KEY_HEADER_OFFSET @"headerOffset"
 #define KEY_HEADER_SIZE @"headerSize"
 #define KEY_HEADER_BINARY_TYPE @"headerType"
 #define KEY_HEADER_BYTE_ORDER @"headerByteOrder"
+#define KEY_IS_PACKED @"isPacked"
+#define KEY_IS_ENCRYPTED @"isEncryted"
 
 #define KEY_LC_RPATHS @"lcRpath"
 #define KEY_LC_LOAD_DYLIBS @"lcLoadDylib"
 #define KEY_LC_LOAD_WEAK_DYLIBS @"lcLoadWeakDylib"
+
 
 @interface MachO : NSObject
 {

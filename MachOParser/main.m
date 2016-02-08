@@ -15,7 +15,6 @@ int main(int argc, const char * argv[])
 {
     @autoreleasepool
     {
-        
         //machO parser
         MachO* parser = nil;
         
@@ -26,10 +25,15 @@ int main(int argc, const char * argv[])
         [parser parse:[NSString stringWithUTF8String:argv[1]]];
         
         //dbg
-        NSLog(@"parsing complete");
+        NSLog(@"parsing complete:");
+        NSLog(@"%@", parser.binaryInfo);
+        /*
+        NSLog(@"macho headers/load commands: %@", parser.binaryInfo[KEY_MACHO_HEADERS]);
         NSLog(@"LC_RPATHs: %@", parser.binaryInfo[KEY_LC_RPATHS]);
         NSLog(@"LC_LOAD_DYLIBS: %@", parser.binaryInfo[KEY_LC_LOAD_DYLIBS]);
         NSLog(@"LC_LOAD_WEAK_DYLIBS: %@", parser.binaryInfo[KEY_LC_LOAD_WEAK_DYLIBS]);
+        */
+
         
     }
     
