@@ -8,8 +8,12 @@
 
 #import "MachO.h"
 
-
 #import <Foundation/Foundation.h>
+
+//TODO: packer checks, import count? etc?
+///Library/Application\ Support/Adobe/Plug-Ins/CC/File\ Formats/Camera\ Raw.plugin/Contents/MacOS/Camera\ Raw ...isn't really packed, but has high entropy
+
+//test! /Applications/Adobe Bridge CC/Adobe Bridge CC.app/Contents/MacOS/Photo Downloader.app/Contents/MacOS/moxplugins/icmanager.framework/icmanager
 
 int main(int argc, const char * argv[])
 {
@@ -22,7 +26,7 @@ int main(int argc, const char * argv[])
         parser = [[MachO alloc] init];
         
         //parse a file
-        [parser parse:[NSString stringWithUTF8String:argv[1]]];
+        [parser parse:[NSString stringWithUTF8String:argv[1]] classify:YES];
         
         //dbg
         NSLog(@"parsing complete:");
@@ -33,8 +37,6 @@ int main(int argc, const char * argv[])
         NSLog(@"LC_LOAD_DYLIBS: %@", parser.binaryInfo[KEY_LC_LOAD_DYLIBS]);
         NSLog(@"LC_LOAD_WEAK_DYLIBS: %@", parser.binaryInfo[KEY_LC_LOAD_WEAK_DYLIBS]);
         */
-
-        
     }
     
     

@@ -11,19 +11,14 @@
 #import <math.h>
 #import <mach-o/fat.h>
 #import <mach-o/arch.h>
+#import <mach-o/swap.h>
 #import <mach-o/loader.h>
-
-
-
-//segment names found in various packers
-// upx: __XHDR
-// mpress: __MPRESS__*
-const char* packerSegmentNames[] = {"__XHDR", "__MPRESS__", NULL};
 
 @implementation MachO
 
 @synthesize binaryInfo;
 @synthesize binaryData;
+@synthesize packerSegmentNames;
 
 //init
 -(id)init
@@ -47,6 +42,11 @@ const char* packerSegmentNames[] = {"__XHDR", "__MPRESS__", NULL};
         
         //init array for LC_LOAD_WEAK_DYLIBs
         self.binaryInfo[KEY_LC_LOAD_WEAK_DYLIBS] = [NSMutableArray array];
+        
+        //init packer seg names
+        // upx: __XHDR
+        // mpress: __MPRESS__*
+        packerSegmentNames = [NSSet setWithObjects:@"__XHDR", @"__MPRESS__", nil];
     }
     
     return self;
@@ -55,7 +55,7 @@ const char* packerSegmentNames[] = {"__XHDR", "__MPRESS__", NULL};
 
 //parse a binary
 // ->extract all required/interesting stuff
--(BOOL)parse:(NSString*)binaryPath
+-(BOOL)parse:(NSString*)binaryPath classify:(BOOL)shouldClassify
 {
     //ret var
     BOOL wasParsed = NO;
@@ -103,15 +103,19 @@ const char* packerSegmentNames[] = {"__XHDR", "__MPRESS__", NULL};
     //dbg msg
     //NSLog(@"parsed load commands");
     
-    //first determine if binary is encrypted
-    self.binaryInfo[KEY_IS_ENCRYPTED] = [NSNumber numberWithBool:[self isEncrypted]];
-    
-    //all encrypted binaries will also appear packed
-    // ->so only check if unencrypted binaries are unpacked
-    if(YES != [self.binaryInfo[KEY_IS_ENCRYPTED] boolValue])
+    //only do packer/encryption checks if specified
+    if(YES == shouldClassify)
     {
-        //determine if packed
-        self.binaryInfo[KEY_IS_PACKED] = [NSNumber numberWithBool:[self isPacked]];
+        //first determine if binary is encrypted
+        self.binaryInfo[KEY_IS_ENCRYPTED] = [NSNumber numberWithBool:[self isEncrypted]];
+        
+        //all encrypted binaries will also appear packed
+        // ->so only check if unencrypted binaries are unpacked
+        if(YES != [self.binaryInfo[KEY_IS_ENCRYPTED] boolValue])
+        {
+            //determine if packed
+            self.binaryInfo[KEY_IS_PACKED] = [NSNumber numberWithBool:[self isPacked]];
+        }
     }
     
     //happy
@@ -132,6 +136,9 @@ bail:
     //start of macho header
     const uint32_t *headerStart = NULL;
     
+    //swapped flag
+    BOOL shouldSwap = NO;
+    
     //header dictionary
     NSDictionary* header = nil;
     
@@ -142,7 +149,7 @@ bail:
     NSMutableArray* headerOffsets = nil;
     
     //per-architecture header
-    const struct fat_arch *arch = NULL;
+    struct fat_arch *arch = NULL;
     
     //pointer to binary's data
     const void* binaryBytes = NULL;
@@ -152,8 +159,6 @@ bail:
     
     //grab binary's bytes
     binaryBytes = [self.binaryData bytes];
-    
-    //sanity check
     if(NULL == binaryBytes)
     {
         //bail
@@ -163,26 +168,52 @@ bail:
     //init start of header
     headerStart = binaryBytes;
     
-    //handle universal case
+    //handle universal (fat) case
     if( (FAT_MAGIC == *headerStart) ||
         (FAT_CIGAM == *headerStart) )
     {
         //dbg msg
         //NSLog(@"parsing universal binary");
         
+        //swap if needed
+        if(FAT_CIGAM == *headerStart)
+        {
+            //set flag
+            shouldSwap = YES;
+            
+            //swap
+            swap_fat_header((struct fat_header*)headerStart, 0);
+        }
+        
         //get number of fat_arch structs
         // ->one per each architecture
-        headerCount = OSSwapBigToHostInt32(((struct fat_header*)binaryBytes)->nfat_arch);
+        headerCount = ((struct fat_header*)binaryBytes)->nfat_arch;
         
         //get offsets of all headers
         for(uint32_t i = 0; i < headerCount; i++)
         {
             //get current struct fat_arch *
             // ->base + size of fat_header + size of fat_archs
-            arch = binaryBytes + sizeof(struct fat_header) + i * sizeof(struct fat_arch);
+            arch = (struct fat_arch*)((unsigned char*)binaryBytes + sizeof(struct fat_header) + i * sizeof(struct fat_arch));
+            
+            //swap if needed
+            if(YES == shouldSwap)
+            {
+                //swap
+                swap_fat_arch(arch, 0x01, 0);
+            }
+            
+            //sanity check
+            // ->make sure arch is something 'within' binary
+            if( ((unsigned char*)arch < (unsigned char*)binaryBytes) ||
+                ((unsigned char*)(binaryBytes + self.binaryData.length) < (unsigned char*)((unsigned char*)arch + sizeof(struct fat_arch))) )
+            {
+                //err
+                goto bail;
+            }
             
             //save into header offset array
-            [headerOffsets addObject:[NSNumber numberWithUnsignedInt:OSSwapBigToHostInt32(arch->offset)]];
+            [headerOffsets addObject:[NSNumber numberWithUnsignedInt:arch->offset]];
         }
     }
     
@@ -216,6 +247,9 @@ bail:
             //32bit mach-O
             // ->little-endian version
             case MH_CIGAM:
+                
+                //swap
+                swap_mach_header((struct mach_header*)headerStart, 0);
                 
                 //init header dictionary
                 header = @{
@@ -254,6 +288,9 @@ bail:
             //64-bit mach-O
             // ->little-endian version
             case MH_CIGAM_64:
+                
+                //swap
+                swap_mach_header_64((struct mach_header_64*)headerStart, 0);
                 
                 //init header dictionary
                 header = @{
@@ -309,7 +346,7 @@ bail:
         wasParsed = YES;
     }
     
-    //bail
+//bail
 bail:
     
     return wasParsed;
@@ -333,14 +370,9 @@ bail:
     
     //current macho header
     struct mach_header* currentHeader =  NULL;
-    
-    //number of load commands
-    uint32_t loadCommandCount = 0;
-    
+
     //grab binary's bytes
     binaryBytes = [self.binaryData bytes];
-    
-    //sanity check
     if(NULL == binaryBytes)
     {
         //bail
@@ -352,18 +384,44 @@ bail:
     {
         //get pointer to current machO header
         currentHeader = (struct mach_header*)(unsigned char*)(binaryBytes + [machoHeader[KEY_HEADER_OFFSET] unsignedIntegerValue]);
-        
-        //get number of load commands
-        loadCommandCount = [self makeCompatible:currentHeader->ncmds byteOrder:machoHeader[KEY_HEADER_BYTE_ORDER]];
-        
+    
         //get first load command
         // ->immediately follows header
         loadCommand = (struct load_command*)(unsigned char*)(binaryBytes + [machoHeader[KEY_HEADER_OFFSET] unsignedIntegerValue] + [machoHeader[KEY_HEADER_SIZE] unsignedIntValue]);
         
         //iterate over all load commands
         // ->number of commands is in 'ncmds' member of (current) header struct
-        for(uint32_t i = 0; i < loadCommandCount; i++)
+        for(uint32_t i = 0; i < currentHeader->ncmds; i++)
         {
+            //swap if needed
+            if(LITTLE_ENDIAN == [machoHeader[KEY_HEADER_BYTE_ORDER] unsignedIntegerValue])
+            {
+                //swap
+                // ->manually swap, cuz don't won't to affect in memory values
+                switch (OSSwapBigToHostInt32(loadCommand->cmd))
+                {
+                    case LC_SEGMENT:
+                        
+                        //swap
+                        swap_segment_command((struct segment_command *)loadCommand, 0x0);
+                        break;
+                        
+                    case LC_SEGMENT_64:
+                        
+                        //swap
+                        swap_segment_command_64((struct segment_command_64 *)loadCommand, 0x0);
+                        break;
+                        
+                    default:
+                        
+                        //swap
+                        swap_load_command(loadCommand, 0x0);
+                        break;
+                        
+                }//switch
+                
+            }//need to swap
+
             //sanity check load command
             if((unsigned char*)loadCommand > (unsigned char*)((unsigned char*)currentHeader + [machoHeader[KEY_HEADER_SIZE] unsignedIntegerValue] + currentHeader->sizeofcmds))
             {
@@ -375,7 +433,7 @@ bail:
             [machoHeader[KEY_LOAD_COMMANDS] addPointer:loadCommand];
             
             //handle load commands of interest
-            switch([self makeCompatible:loadCommand->cmd byteOrder:machoHeader[KEY_HEADER_BYTE_ORDER]])
+            switch(loadCommand->cmd)
             {
                 //LC_RPATHs
                 // ->extract and save path
@@ -403,7 +461,7 @@ bail:
                     
                     //save if new dylib
                     if( (LC_LOAD_DYLIB == loadCommand->cmd) &&
-                       (YES != [self.binaryInfo[KEY_LC_LOAD_DYLIBS] containsObject:path]) )
+                        (YES != [self.binaryInfo[KEY_LC_LOAD_DYLIBS] containsObject:path]) )
                     {
                         //save
                         [self.binaryInfo[KEY_LC_LOAD_DYLIBS] addObject:path];
@@ -411,7 +469,7 @@ bail:
                     
                     //save if new weak dylib
                     else if( (LC_LOAD_WEAK_DYLIB == loadCommand->cmd) &&
-                            (YES != [self.binaryInfo[KEY_LC_LOAD_WEAK_DYLIBS] containsObject:path]) )
+                             (YES != [self.binaryInfo[KEY_LC_LOAD_WEAK_DYLIBS] containsObject:path]) )
                     {
                         //save
                         [self.binaryInfo[KEY_LC_LOAD_WEAK_DYLIBS] addObject:path];
@@ -425,7 +483,8 @@ bail:
             }
             
             //got to next load command
-            loadCommand = (struct load_command *)(((unsigned char*)((unsigned char*)loadCommand + [self makeCompatible:loadCommand->cmdsize byteOrder:machoHeader[KEY_HEADER_BYTE_ORDER]])));
+            // ->immediately follows current one
+            loadCommand = (struct load_command *)(((unsigned char*)((unsigned char*)loadCommand + loadCommand->cmdsize)));
             
         }//all load commands
         
@@ -472,6 +531,33 @@ bail:
                 continue;
             }
             
+            /*
+            //swap if needed
+            if(LITTLE_ENDIAN == [machoHeader[KEY_HEADER_BYTE_ORDER] unsignedIntegerValue])
+            {
+                //swap 32bit segment command
+                if(loadCommand->cmd == LC_SEGMENT)
+                {
+                    //unswap (header)
+                    swap_load_command(loadCommand, 0x0);
+                    
+                    //swap full load command
+                    swap_segment_command((struct segment_command *)loadCommand, 0x0);
+                    
+                }
+                
+                //swap 64bit segment command
+                else
+                {
+                    //unswap (header)
+                    swap_load_command(loadCommand, 0x0);
+                    
+                    //swap full load command
+                    swap_segment_command_64((struct segment_command_64 *)loadCommand, 0x0);
+                }
+            }
+            */
+             
             //ignore everything that is not a text segment
             // ->for name check, segment_command & segment_command_64 are same
             if(0 != strncmp(((struct segment_command *)loadCommand)->segname, SEG_TEXT, sizeof(((struct segment_command *)loadCommand)->segname)))
@@ -547,6 +633,12 @@ bail:
     //total
     float totalCompressedData = 0.0f;
     
+    //segment name
+    NSString* segmentName = nil;
+    
+    //segment name length
+    NSUInteger segmentNameLength = 0;
+    
     //open/read into file
     fileData = [NSData dataWithContentsOfFile:self.binaryInfo[KEY_BINARY_PATH]];
     if(nil == fileData)
@@ -576,19 +668,25 @@ bail:
                 continue;
             }
             
+            //init segment name length
+            segmentNameLength = MIN(strlen(((struct segment_command *)loadCommand)->segname), sizeof(((struct segment_command *)loadCommand)->segname));
+            
+            //sanity check
+            if(0 == segmentNameLength)
+            {
+                //skip
+                continue;
+            }
+            
+            //init segment name
+            segmentName = [[NSString alloc] initWithBytes:((struct segment_command *)loadCommand)->segname length:segmentNameLength encoding:NSUTF8StringEncoding];
+    
             //check if segment name matches known packer
             // ->upx, mpress etc have unique segment names
-            for(NSUInteger j = 0; NULL != packerSegmentNames[j]; j++)
+            if(YES == [self.packerSegmentNames containsObject:segmentName])
             {
-                //check for match
-                if(0 != strncmp(((struct segment_command *)loadCommand)->segname, packerSegmentNames[j], strlen(packerSegmentNames[j])))
-                {
-                    //skip
-                    continue;
-                }
-                
-                //TODO: remove
-                //NSLog(@"found match w/ packed section: %s", packerSegmentNames[j]);
+                //dbg msg
+                //NSLog(@"found match w/ packed section: %@", segmentName);
                 
                 //got match
                 packed = YES;
@@ -596,6 +694,7 @@ bail:
                 //bail
                 // ->its packed
                 goto bail;
+                
             }
             
             //32bit
@@ -624,7 +723,7 @@ bail:
             // ->does entire segment...
             segmentEntropy = [self calcEntropy:&fileBytes[segmentOffset] length:segmentSize];
             
-            //TODO remove
+            //dbg msg
             //NSLog(@"%s's entropy: %f", ((struct segment_command *)loadCommand)->segname, segmentEntropy);
             
             //TODO: test more!
@@ -635,6 +734,9 @@ bail:
             }
         
         }//all load commands
+        
+        //dbg msg
+        //NSLog(@"final calc: %f\n", (1.0 * totalCompressedData)/fileData.length);
         
         //final calculation for architecture
         if( ((1.0 * totalCompressedData)/fileData.length) > .2)
@@ -657,7 +759,6 @@ bail:
 }
 
 //based on https://github.com/erocarrera/pefile/blob/master/pefile.py
-
 -(float)calcEntropy:(char*)data length:(NSUInteger)length
 {
     //entropy
@@ -699,33 +800,10 @@ bail:
         entropy -= pX*log2(pX);
     }
     
-    
+//bail
 bail:
     
     return entropy;
-}
-
-//helper function
-// ->given an 32bit value, ensure it the correct byte order
--(uint32_t)makeCompatible:(uint32_t)input byteOrder:(NSNumber*)byteOrder
-{
-    //compatible value
-    uint32_t compatibleValue = 0;
-    
-    //swap if needed
-    if(LITTLE_ENDIAN == [byteOrder unsignedIntegerValue])
-    {
-        //swap
-        compatibleValue = OSSwapInt32(input);
-    }
-    //no need to swap
-    else
-    {
-        //simply assign
-        compatibleValue = input;
-    }
-    
-    return compatibleValue;
 }
 
 //helper function
@@ -747,7 +825,7 @@ bail:
     
     //set path offset
     // ->different based on load command type
-    switch([self makeCompatible:loadCommand->cmd byteOrder:byteOrder])
+    switch(loadCommand->cmd)
     {
         //LC_RPATHs
         case LC_RPATH:
@@ -775,7 +853,7 @@ bail:
     
     //set path's length
     // ->min of strlen/value calculated from load command size
-    pathLength = MIN(strlen(pathBytes), ([self makeCompatible:loadCommand->cmdsize byteOrder:byteOrder] - pathOffset));
+    pathLength = MIN(strlen(pathBytes), (loadCommand->cmdsize - pathOffset));
     
     //create nstring version of path
     path = [[NSString alloc] initWithBytes:pathBytes length:pathLength encoding:NSUTF8StringEncoding];

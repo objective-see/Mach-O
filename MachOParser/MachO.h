@@ -39,16 +39,15 @@
 //binary's data
 @property(nonatomic, retain)NSData* binaryData;
 
+//segment names found in various packers
+@property(nonatomic, retain)NSSet* packerSegmentNames;
+
 
 /* METHODS */
 
 //parse a binary
 // ->extract all required/interesting stuff
--(BOOL)parse:(NSString*)binaryPath;
-
-//helper function
-// ->given an 32bit value, ensure it the correct byte order
--(uint32_t)makeCompatible:(uint32_t)input byteOrder:(NSNumber*)byteOrder;
+-(BOOL)parse:(NSString*)binaryPath classify:(BOOL)shouldClassify;
 
 
 @end
