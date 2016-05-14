@@ -11,9 +11,7 @@
 #import <Foundation/Foundation.h>
 
 //TODO: packer checks, import count? etc?
-///Library/Application\ Support/Adobe/Plug-Ins/CC/File\ Formats/Camera\ Raw.plugin/Contents/MacOS/Camera\ Raw ...isn't really packed, but has high entropy
-
-//test! /Applications/Adobe Bridge CC/Adobe Bridge CC.app/Contents/MacOS/Photo Downloader.app/Contents/MacOS/moxplugins/icmanager.framework/icmanager
+// ->/Library/Application\ Support/Adobe/Plug-Ins/CC/File\ Formats/Camera\ Raw.plugin/Contents/MacOS/Camera\ Raw ...isn't really packed, but has high entropy
 
 int main(int argc, const char * argv[])
 {
@@ -31,6 +29,7 @@ int main(int argc, const char * argv[])
         //dbg
         NSLog(@"parsing complete:");
         NSLog(@"%@", parser.binaryInfo);
+       
         /*
         NSLog(@"macho headers/load commands: %@", parser.binaryInfo[KEY_MACHO_HEADERS]);
         NSLog(@"LC_RPATHs: %@", parser.binaryInfo[KEY_LC_RPATHS]);
