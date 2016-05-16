@@ -52,7 +52,6 @@
     return self;
 }
 
-
 //parse a binary
 // ->extract all required/interesting stuff
 -(BOOL)parse:(NSString*)binaryPath classify:(BOOL)shouldClassify
@@ -393,6 +392,13 @@ bail:
         // ->number of commands is in 'ncmds' member of (current) header struct
         for(uint32_t i = 0; i < currentHeader->ncmds; i++)
         {
+            //sanity check load command
+            if((unsigned char*)loadCommand > (unsigned char*)((unsigned char*)currentHeader + [machoHeader[KEY_HEADER_SIZE] unsignedIntegerValue] + currentHeader->sizeofcmds))
+            {
+                //bail
+                goto bail;
+            }
+            
             //swap if needed
             if(LITTLE_ENDIAN == [machoHeader[KEY_HEADER_BYTE_ORDER] unsignedIntegerValue])
             {
@@ -422,13 +428,6 @@ bail:
                 
             }//need to swap
 
-            //sanity check load command
-            if((unsigned char*)loadCommand > (unsigned char*)((unsigned char*)currentHeader + [machoHeader[KEY_HEADER_SIZE] unsignedIntegerValue] + currentHeader->sizeofcmds))
-            {
-                //bail
-                goto bail;
-            }
-            
             //save load command
             [machoHeader[KEY_LOAD_COMMANDS] addPointer:loadCommand];
             
@@ -531,33 +530,6 @@ bail:
                 continue;
             }
             
-            /*
-            //swap if needed
-            if(LITTLE_ENDIAN == [machoHeader[KEY_HEADER_BYTE_ORDER] unsignedIntegerValue])
-            {
-                //swap 32bit segment command
-                if(loadCommand->cmd == LC_SEGMENT)
-                {
-                    //unswap (header)
-                    swap_load_command(loadCommand, 0x0);
-                    
-                    //swap full load command
-                    swap_segment_command((struct segment_command *)loadCommand, 0x0);
-                    
-                }
-                
-                //swap 64bit segment command
-                else
-                {
-                    //unswap (header)
-                    swap_load_command(loadCommand, 0x0);
-                    
-                    //swap full load command
-                    swap_segment_command_64((struct segment_command_64 *)loadCommand, 0x0);
-                }
-            }
-            */
-             
             //ignore everything that is not a text segment
             // ->for name check, segment_command & segment_command_64 are same
             if(0 != strncmp(((struct segment_command *)loadCommand)->segname, SEG_TEXT, sizeof(((struct segment_command *)loadCommand)->segname)))
