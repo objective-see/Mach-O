@@ -23,6 +23,7 @@
 #define KEY_IS_ENCRYPTED @"isEncryted"
 
 #define KEY_LC_RPATHS @"lcRpath"
+#define KEY_LC_REEXPORT_DYLIBS @"lcRexports"
 #define KEY_LC_LOAD_DYLIBS @"lcLoadDylib"
 #define KEY_LC_LOAD_WEAK_DYLIBS @"lcLoadWeakDylib"
 

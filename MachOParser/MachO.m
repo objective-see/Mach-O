@@ -37,6 +37,9 @@
         //init array for LC_RPATHS
         self.binaryInfo[KEY_LC_RPATHS] = [NSMutableArray array];
         
+        //init array for LC_REEXPORT_DYLIBs
+        self.binaryInfo[KEY_LC_REEXPORT_DYLIBS] = [NSMutableArray array];
+        
         //init array for LC_LOAD_DYLIBs
         self.binaryInfo[KEY_LC_LOAD_DYLIBS] = [NSMutableArray array];
         
@@ -450,6 +453,22 @@ bail:
                     
                     break;
                     
+                //LC_REEXPORT_DYLIB
+                // ->extract and save path
+                case LC_REEXPORT_DYLIB:
+                    
+                    //extract name
+                    path = [self extractPath:loadCommand byteOrder:machoHeader[KEY_HEADER_BYTE_ORDER]];
+                    
+                    //save if new
+                    if(YES != [self.binaryInfo[KEY_LC_REEXPORT_DYLIBS] containsObject:path])
+                    {
+                        //save
+                        [self.binaryInfo[KEY_LC_REEXPORT_DYLIBS] addObject:path];
+                    }
+                    
+                    break;
+                    
                 //LC_LOAD_DYLIB and LC_LOAD_WEAK_DYLIB
                 // ->extract and save path
                 case LC_LOAD_DYLIB:
@@ -807,10 +826,11 @@ bail:
             
             break;
             
-        //LC_LOAD_DYLIB or LC_LOAD_WEAK_DYLIB
+        //LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIBS
         case LC_LOAD_DYLIB:
+        case LC_REEXPORT_DYLIB:
         case LC_LOAD_WEAK_DYLIB:
-            
+        
             //set offset
             pathOffset = sizeof(struct dylib_command);
             
