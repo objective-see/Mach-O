@@ -13,8 +13,11 @@
 //TODO: packer checks, import count? etc?
 // ->/Library/Application\ Support/Adobe/Plug-Ins/CC/File\ Formats/Camera\ Raw.plugin/Contents/MacOS/Camera\ Raw ...isn't really packed, but has high entropy
 
-int main(int argc, const char * argv[])
-{
+int main(int argc, const char * argv[]) {
+  if (argc != 2) {
+      fprintf(stderr, "Usage: MachOParser <binary>\n");
+      return -1;
+ }
     @autoreleasepool
     {
         //machO parser
